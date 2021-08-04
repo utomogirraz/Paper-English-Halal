@@ -1,0 +1,261 @@
+CALL gds.graph.create(
+    'myGraph',
+    ['Food', 'Resource'],
+    {
+        Has: {
+            type: 'food__containsIngredient',
+            properties: {
+                score: {
+                    property: 'score',
+                    defaultValue: 1.0
+                }
+            }
+        }
+    }
+);
+dbms.memory.heap.initial_size=512m
+dbms.memory.heap.max_size=1G
+dbms.memory.pagecache.size=512m
+
+##
+MATCH p=()-[:SimilarJaccard]-(f:Food)-[:foodlirmm__certificate]-(Certificate)
+SET f.status_halal = 'Halal';
+RETURN f.rdfs__label
+
+MATCH p=()-[:SimilarJaccard]-(f:Food)-[:foodlirmm__certificate]-(Certificate)
+SET (CASE WHEN f.status_halal = 'Halal' THEN f END).status_halal = 'tidak_halal';
+
+MATCH (p1:Food)-[:SimilarJaccard]->(f:Food)
+WHERE f.status_halal = 'Halal' AND NOT EXISTS(p1.status_halal)
+SET p1.dianggap = 'dianggap_Halal';
+RETURN p1.rdfs__label
+Original Love Juice Orange
+
+##Centrality
+CALL gds.graph.create(
+  'myGraph',
+  'Food',
+  'SimilarJaccardxAA')
+##
+WITH "CALL gds.pageRank.stream('myGraph')
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).rdfs__label AS name, score
+ORDER BY score DESC, name ASC" AS query
+CALL apoc.export.csv.query(query, "JaccardXAA_PageRank.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+
+##
+CALL gds.graph.create('myGraph', 'Food', 'SimilarJaccardxAA')
+##
+
+##properties
+LOAD CSV WITH HEADERS FROM 'file:///JaccardXAA_PageRank.csv' AS row
+MERGE (n:Food {rdfs__label:row.name})
+ON MATCH SET n.centrality = toFloat(row.score)
+
+MERGE (a)-[score:SCORE]-(b)
+SET score.score = toFloat(line.Score)
+##SIMILAR
+LOAD CSV WITH HEADERS FROM 'file:///Interlinking_Jaccard.csv' AS row
+MATCH (p1:Food {rdfs__label:row.from}), (p2:Food {rdfs__label:row.to})
+CREATE (p1)-[r:SimilarJaccard]->(p2)
+SET r.similar = toFloat(row.similarity_x);
+
+##Relationship
+LOAD CSV WITH HEADERS FROM 'file:///Interlinking_Jaccard.csv' AS row
+MERGE ()-[r:SimilarJaccard]->()
+SET r.similar = toFloat(row.similarity_x);
+
+##Weighted Jaccard
+CALL gds.nodeSimilarity.stream('myGraph2', { relationshipWeightProperty: 'score', similarityCutoff: 0.5 })
+YIELD node1, node2, similarity
+RETURN gds.util.asNode(node1).rdfs__label AS Person1, gds.util.asNode(node2).rdfs__label AS Person2, similarity
+ORDER BY Person1
+
+
+##DELETE N
+MATCH (n:Food)
+OPTIONAL MATCH (n)-[r:food__containsIngredient]->(i:Resource)
+WITH n, i
+WHERE i is Null
+DETACH DELETE n
+
+##Jaccard
+WITH "MATCH (p1:Food)-[:food__containsIngredient]->(Ingredient)
+WITH p1, collect(id(Ingredient)) AS p1Ingredient
+MATCH (p2:Food)-[:food__containsIngredient]->(Ingredient) WHERE p1 <> p2
+WITH p1, p1Ingredient, p2, collect(id(Ingredient)) AS p2Ingredient
+RETURN p1.rdfs__label AS from,
+       p1.uri AS URIFrom, 
+       p1.food__ingredientsListAsText AS Ingredient1,
+       p2.rdfs__label AS to,
+       p2.uri AS URITo,
+       p2.food__ingredientsListAsText AS Ingredient2,
+       gds.alpha.similarity.jaccard(p1Ingredient, p2Ingredient) AS similarity
+ORDER BY similarity DESC" AS query
+CALL apoc.export.csv.query(query, "Jaccard_Similarity_Neo4j.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+##Overlap Similarity
+WITH "MATCH (food:Food)-[:food__containsIngredient]->(Ingredient)
+WITH {item:id(Ingredient), categories: collect(id(food))} AS userData
+WITH collect(userData) AS data
+CALL gds.alpha.similarity.overlap.stream({data: data})
+YIELD item1, item2, count1, count2, intersection, similarity
+RETURN gds.util.asNode(item1).uri AS from, gds.util.asNode(item2).uri AS to,
+       count1, count2, intersection, similarity
+ORDER BY similarity DESC" as query
+CALL apoc.export.csv.query(query, "Overlap_Similarity_Neo4j.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+##ANN
+WITH "MATCH (p:Food)-[:food__containsIngredient]->(Ingredient)
+WITH {item:id(p), categories: collect(id(Ingredient))} AS userData
+WITH collect(userData) AS data
+CALL gds.alpha.ml.ann.stream({
+  data: data,
+  algorithm: 'jaccard',
+  similarityCutoff: -1,
+  concurrency: 1,
+  topK:100000
+})
+YIELD item1, item2, similarity
+return gds.util.asNode(item1).rdfs__label AS from,gds.util.asNode(item1).food__ingredientsListAsText AS Ingredient1,gds.util.asNode(item2).rdfs__label AS to, gds.util.asNode(item2).food__ingredientsListAsText AS Ingredient2, similarity
+ORDER BY similarity DESC" as query
+CALL apoc.export.csv.query(query, "ANN_Similarity_Neo4j.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+##ADAMIC ADAR
+WITH "MATCH (p1:Food)
+MATCH (p2:Food)
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+       gds.alpha.linkprediction.adamicAdar(p1, p2, {relationshipQuery: 'food__containsIngredient'}) AS score
+ORDER BY score DESC" as query
+CALL apoc.export.csv.query(query, "Adamic_Adar_Link_Prediction_Neo4j.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+##Common Neighbors
+WITH "MATCH (p1:Food)
+MATCH (p2:Food)
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+gds.alpha.linkprediction.commonNeighbors(p1, p2, {relationshipQuery: 'food__containsIngredient'}) AS score
+ORDER BY score DESC" as query
+CALL apoc.export.csv.query(query, "Common_Neighbor_Similarity_Neo4j.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+##Preferential Attachment
+WITH "MATCH (p1:Food)
+MATCH (p2:Food)
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+gds.alpha.linkprediction.preferentialAttachment(p1, p2, {relationshipQuery: 'food__containsIngredient'}) AS score
+ORDER BY score DESC" as query
+CALL apoc.export.csv.query(query, "Preferential_Attachment_Link_Neo4j.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
+
+
+##Resource Allocation
+MATCH (p1:Food)
+MATCH (p2:Food)
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+gds.alpha.linkprediction.resourceAllocation(p1, p2, {relationshipQuery: 'food__containsIngredient'}) AS score
+ORDER BY score DESC
+
+##SameComunity
+MATCH (p1:Food)
+MATCH (p2:Food)
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+gds.alpha.linkprediction.sameCommunity(p1, p2) AS score
+ORDER BY score DESC
+
+##Total Neighbor
+MATCH (p1:Food)
+MATCH (p2:Food)
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+gds.alpha.linkprediction.totalNeighbors(p1, p2, {relationshipQuery: 'food__containsIngredient'}) AS score
+ORDER BY score DESC
+\\
+MATCH (p1:Food)-[:food__containsIngredient]->(Resource)
+WITH p1, collect(id(Resource)) AS p1Resource
+MATCH (p2:Food)-[:food__containsIngredient]->(Resource) WHERE p1 <> p2
+WITH p1, p1Resource, p2, collect(id(Resource)) AS p2Resource
+RETURN p1.rdfs__label AS from,
+       p2.rdfs__label AS to,
+       p1.uri As URIFrom,
+       p2.uri As URITo,
+       gds.alpha.similarity.jaccard(p1Resource, p2Resource) AS similarity
+ORDER BY similarity DESC
+
+Cosine
+MATCH (p:Food), (c:Resource)
+OPTIONAL MATCH (p)-[likes:SIMILAR]->(c)
+WITH {item:id(p), weights: collect(coalesce(likes.score, gds.util.NaN()))} AS userData
+WITH collect(userData) AS data
+CALL gds.alpha.similarity.cosine.stream({data: data})
+YIELD item1, item2, count1, count2, similarity
+RETURN gds.util.asNode(item1).rdfs__label AS from, gds.util.asNode(item2).rdfs__label AS to, similarity
+ORDER BY similarity DESC
+
+MATCH (p:Food), (c:Resource)
+OPTIONAL MATCH (p)-[likes:MIRIP]->(c)
+WITH {item:id(p), weights: collect(coalesce(likes.score, gds.util.NaN()))} AS userData
+WITH collect(userData) AS data
+CALL gds.alpha.similarity.cosine.stream({
+  data: data,
+  similarityCutoff: 0.0,
+  topK: 1
+})
+YIELD item1, item2, count1, count2, similarity
+RETURN gds.util.asNode(item1).rdfs__label AS from, gds.util.asNode(item2).rdfs__label AS to, similarity
+ORDER BY from
+
+Pearson
+MATCH (p:Food), (m:Resource)
+OPTIONAL MATCH (p)-[rated:food__containsIngredient]->(m)
+WITH {item:id(p), weights: collect(coalesce(rated.score, gds.util.NaN()))} AS userData
+WITH collect(userData) AS data
+CALL gds.alpha.similarity.pearson.stream({
+ data: data,
+ topK:1,
+ similarityCutoff: 0.0
+})
+YIELD item1, item2, count1, count2, similarity
+RETURN gds.util.asNode(item1).rdfs__label AS from, gds.util.asNode(item2).rdfs__label AS to, similarity
+ORDER BY similarity DESC
+
+Eucladian
+MATCH (p:Food), (c:Resource)
+OPTIONAL MATCH (p)-[likes:SIMILAR]->(c)
+WITH {item:id(p), weights: collect(coalesce(likes.score, gds.util.NaN()))} AS userData
+WITH collect(userData) AS data
+CALL gds.alpha.similarity.euclidean.stream({
+ data: data,
+ topK: 0
+})
+YIELD item1, item2, count1, count2, similarity
+RETURN gds.util.asNode(item1).rdfs__label AS from, gds.util.asNode(item2).rdfs__label AS to, similarity
+ORDER BY similarity
+
+
+
+
+Export
+WITH "MATCH path = (food:Food)-[:food__containsIngredient]->(Resource)
+      RETURN food.rdfs__label AS name, food.uri AS uriFood,
+             Resource.uri AS uriIng" AS query
+CALL apoc.export.csv.query(query, "cosine-directed.csv", {})
+YIELD file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data
+RETURN file, source, format, nodes, relationships, properties, time, rows, batchSize, batches, done, data;
